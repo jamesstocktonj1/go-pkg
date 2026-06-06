@@ -106,6 +106,10 @@ func Unpin() {
 }
 
 //nolint:unused
+//go:wasmimport wasi_snapshot_preview1 adapter_monotonic_clock_set_paused
+func adapterMonotonicClockSetPaused(paused bool)
+
+//nolint:unused
 //go:wasmexport cabi_realloc
 func cabiRealloc(oldPointer unsafe.Pointer, oldSize, align, newSize uintptr) unsafe.Pointer {
 	if oldPointer != nil || oldSize != 0 {
@@ -113,7 +117,20 @@ func cabiRealloc(oldPointer unsafe.Pointer, oldSize, align, newSize uintptr) uns
 	}
 
 	if useGCAllocations {
-		return Allocate(&pinner, newSize, align)
+		// Here we call `adapter_monotonic_clock_set_paused` before and
+		// after allocating since the Go garbage collector calls
+		// `clock_time_get` to measure time spent in various stages of
+		// GC, but calls to imports from `cabi_realloc` are forbidden by
+		// the component model, so we must tell the
+		// `wasi_snapshot_preview1` adapter to use a cached value
+		// instead of calling `monotonic_clock::now`.
+		//
+		// See https://github.com/bytecodealliance/wasmtime/pull/13563
+		// for more details.
+		adapterMonotonicClockSetPaused(true)
+		pointer := Allocate(&pinner, newSize, align)
+		adapterMonotonicClockSetPaused(false)
+		return pointer
 	} else {
 		alignedSize := newSize + offset(newSize, align)
 		unaligned := sbrk(alignedSize)
